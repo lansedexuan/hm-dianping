@@ -1,6 +1,8 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
@@ -9,12 +11,20 @@ import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
+import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpSession;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.*;
 import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 
 /**
@@ -28,6 +38,9 @@ import static com.hmdp.utils.SystemConstants.USER_NICK_NAME_PREFIX;
 @Slf4j
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     /**
      * 发送验证码
      * @param phone
@@ -46,7 +59,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         String code = RandomUtil.randomNumbers(6);
 
         //4 保存验证码到session
-        session.setAttribute("code",code);
+        //session.setAttribute("code",code);
+
+        //set key value ex 120
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
 
         //5 发送验证码(模拟)
         log.debug("发送短信验证码成功，验证码：{}",code);
@@ -70,10 +86,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.fail("手机号格式错误");
         }
 
-        //2 校验验证码
+        //2 从redis中获取验证码并校验
         String code=loginForm.getCode();//前端提交的code
-        Object cacheCode = session.getAttribute("code");//session保存的code
-        if(cacheCode == null || !cacheCode.toString().equals(code)){//反向校验 避免if嵌套
+        //Object cacheCode = session.getAttribute("code");//session保存的code
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
+
+        if(cacheCode == null || !cacheCode.equals(code)){//反向校验 避免if嵌套
             //3 不一致 报错
             return Result.fail("验证码错误");
         }
@@ -88,13 +106,33 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             user = createUserWithPhone(phone);
         }
 
-        //7 保存用户信息到session
+        //7 保存用户信息到redis
+        //7.1 随机生成token
+        String token = UUID.randomUUID().toString(true);//true 格式为去掉-
+        //7.2 将user对象转为hash结构
+        UserDTO userDTO =BeanUtil.copyProperties(user, UserDTO.class);
+/*      Map<String, Object> userMap = new HashMap<>();
+        userMap.put("id", userDTO.getId() != null ? Long.toString(userDTO.getId()) : null);
+        userMap.put("nickName", userDTO.getNickName());
+        userMap.put("icon", userDTO.getIcon());*/
+        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO,new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName,fieldValue)->fieldValue.toString()));//beanToMap: userDTO转为map
+        //7.3 存储
+        String tokenKey = LOGIN_USER_KEY + token;
+        stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);//1个key 多个value
+        log.info("用户登录成功，已存入redis: {}", user.getId());
+        //7.4 设置token有效期
+        stringRedisTemplate.expire(tokenKey,LOGIN_USER_TTL, TimeUnit.MINUTES);
+
         //session.setAttribute("user",user);
         //UserDTO userDTO = new UserDTO();
-        session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
-        log.info("用户登录成功，已存入session: {}", user.getId());
+        //session.setAttribute("user", BeanUtil.copyProperties(user, UserDTO.class));
+        //log.info("用户登录成功，已存入session: {}", user.getId());
 
-        return Result.ok();//session不需要返回用户凭证
+        //8 返回token
+        return Result.ok(token);//session不需要返回用户凭证
     }
 
     /**
