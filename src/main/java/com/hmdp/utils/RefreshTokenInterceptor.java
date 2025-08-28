@@ -43,7 +43,7 @@ public class RefreshTokenInterceptor implements HandlerInterceptor{
         UserDTO userDTO = BeanUtil.fillBeanWithMap(userMap, new UserDTO(), false);//fillBeanWithMap: 将map数据填充到bean中
 
         //6 存在，保存用户到ThreadLocal
-        log.info("用户存在");
+        //log.info("用户存在");
         UserHolder.saveUser(userDTO);
 
         //7 刷新token有效期
