@@ -9,9 +9,13 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IVoucherService;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import jakarta.annotation.Resource;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +35,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private ISeckillVoucherService seckillVoucherService;
     @Resource
     private RedisIdWorker redisIdWorker;
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private RedissonClient redissonClient;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -53,7 +61,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return Result.fail("库存不足!");
         }
 
-        Long userId = UserHolder.getUser().getId();
+/*      Long userId = UserHolder.getUser().getId();
         synchronized(userId.toString().intern()) {//intern()方法，将字符串常量池中的字符串对象引用返回
             //拿到事务代理对象
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
@@ -61,6 +69,29 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             //问题: @Transactional无效，因为this.createVoucherOrder()返回的是this，
             //即VoucherOrderServiceImpl对象，而不是代理对象
             //return this.createVoucherOrder();
+        }*/
+
+        Long userId  = UserHolder.getUser().getId();
+        //创建锁对象
+        //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+
+        //获取锁
+        //boolean isLock = lock.tryLock(1200);
+        boolean isLock = lock.tryLock();//无参 失败不等待
+
+        if(!isLock){
+            return Result.fail("请勿重复下单!");
+        }
+
+        try {
+            //拿到事务代理对象
+            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            return proxy.createVoucherOrder(voucherId);//等事务完成后再释放锁
+        } finally {
+            //释放锁
+            //lock.unLock();
+            lock.unlock();
         }
     }
 
