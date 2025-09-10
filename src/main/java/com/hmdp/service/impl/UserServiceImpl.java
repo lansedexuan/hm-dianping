@@ -14,13 +14,18 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpSession;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -133,6 +138,77 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
         //8 返回token
         return Result.ok(token);//session不需要返回用户凭证
+    }
+
+    @Override
+    public Result sign() {
+        //1 获取当前登录用户
+        Long userId = UserHolder.getUser().getId();
+
+        //2 获取日期
+        LocalDateTime now = LocalDateTime.now();
+
+        //3 拼接Key
+        String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key = USER_SIGN_KEY + userId + keySuffix;
+
+        //4 获取今天是本月第几天
+        int dayOfMonth = now.getDayOfMonth();
+
+        //5 写入redis SETBIT key offset 1
+        //offset: 0-30 dayOfMonth表示1-31
+        stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
+
+        return Result.ok();
+    }
+
+    @Override
+    public Result signCount() {
+        //1 获取当前登录用户
+        Long userId = UserHolder.getUser().getId();
+
+        //2 获取日期
+        LocalDateTime now = LocalDateTime.now();
+
+        //3 拼接Key
+        String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
+        String key = USER_SIGN_KEY + userId + keySuffix;
+
+        //4 获取今天是本月第几天
+        int dayOfMonth = now.getDayOfMonth();
+
+        //5 获取本月截止今天为止的所有的签到记录，返回的是一个十进制数字
+        List<Long> result = stringRedisTemplate.opsForValue().bitField(//BITFIELD sign:5:2025 GET u14 0
+                key,
+                BitFieldSubCommands.create().
+                        get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth)).valueAt(0)//GET u14 0
+        );
+        if (result == null || result.isEmpty()) {
+            //没有签到结果
+            return Result.ok(0);
+        }
+        Long num = result.get(0);
+        if(num == null || num == 0L){
+            return Result.ok(0);
+        }
+
+        //6 循环遍历
+        int count = 0;
+        while(true){
+            //7 让这个数字与1做位运算，得到第几天是1
+            if((num & 1) == 0){
+                //8 如果是0，说明未签到，结束
+                break;
+            }else{
+                //9 如果是1，说明已签到，计数器+1
+                count++;
+            }
+            //10 把数字右移一位 摒弃最后一个bit位，继续下一个bit位
+            //num = num >> 1; //>> —— 算术右移 保留符号位 如果是正数，高位补 0; 如果是负数，高位补 1。
+            num>>>=1;         //>>> —— 逻辑右移 符号位丢失 高位一律补 0
+        }
+
+        return Result.ok(count);
     }
 
     /**

@@ -30,7 +30,8 @@ public class MvcConfig implements WebMvcConfigurer {
                         "shop/**",
                         "shop-type/**",
                         "upload/**",
-                        "/voucher/**"
+                        "/voucher/**",
+                        "/blog-edit"
                 )
                 .order(1);//值越大 优先级越低
     }
